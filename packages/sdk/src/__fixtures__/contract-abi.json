@@ -2122,6 +2122,23 @@
           ]
         },
         {
+          "name": "get_positions_paginated",
+          "inputs": [
+            {
+              "name": "provider",
+              "type": "Address"
+            },
+            {
+              "name": "offset",
+              "type": "u64"
+            },
+            {
+              "name": "limit",
+              "type": "u32"
+            }
+          ]
+        },
+        {
           "name": "get_tick_cumulative",
           "inputs": []
         },
@@ -6559,6 +6576,10 @@
           ]
         },
         {
+          "name": "is_paused",
+          "inputs": []
+        },
+        {
           "name": "is_venue_allowed",
           "inputs": [
             {
@@ -6577,6 +6598,15 @@
             {
               "name": "limit",
               "type": "u32"
+            }
+          ]
+        },
+        {
+          "name": "pause",
+          "inputs": [
+            {
+              "name": "admin",
+              "type": "Address"
             }
           ]
         },
@@ -6746,6 +6776,37 @@
             {
               "name": "deadline",
               "type": "u64"
+            }
+          ]
+        },
+        {
+          "name": "unpause",
+          "inputs": [
+            {
+              "name": "admin",
+              "type": "Address"
+            }
+          ]
+        },
+        {
+          "name": "upgrade",
+          "inputs": [
+            {
+              "name": "admin",
+              "type": "Address"
+            },
+            {
+              "name": "new_wasm_hash",
+              "type": "BytesN<32>"
+            }
+          ]
+        },
+        {
+          "name": "version",
+          "inputs": [
+            {
+              "name": "_env",
+              "type": "Env"
             }
           ]
         }

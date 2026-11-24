@@ -319,6 +319,10 @@ pub struct ConcentratedLiquidity;
 
 #[contractimpl]
 impl ConcentratedLiquidity {
+    /// Cap on how many position ranges a single `get_positions` / `get_positions_paginated` call
+    /// may return. Callers holding more must page with `offset`/`limit`.
+    pub const MAX_PAGE: u32 = 100;
+
     /// Extend the contract's **instance** storage TTL (issue #905).
     ///
     /// Called as the first statement of every public entrypoint that touches
@@ -3829,13 +3833,49 @@ impl ConcentratedLiquidity {
         Ok(c_lo + (((c_hi - c_lo) as i128 * elapsed) / dt) as i64)
     }
 
-    /// Returns all open position tick-range pairs for `provider`.
-    pub fn get_positions(env: Env, provider: Address) -> Vec<(i32, i32)> {
+    /// Returns up to `MAX_PAGE` open position tick-range pairs for `provider`,
+    /// starting at `offset`. Callers holding more than `MAX_PAGE` positions must page
+    /// through all of them with repeated calls (`offset += MAX_PAGE` each time).
+    ///
+    /// The underlying `PositionList` stores all distinct open tick ranges for a provider.
+    /// Because `PositionList` is unbounded in storage size if a provider opens very many
+    /// ranges, `get_positions` and this function enforce page bounds of `MAX_PAGE` to prevent
+    /// trapping the view on oversized reads. Callers must page through all ranges using `offset`.
+    pub fn get_positions_paginated(
+        env: Env,
+        provider: Address,
+        offset: u64,
+        limit: u32,
+    ) -> Vec<(i32, i32)> {
         Self::extend_instance_ttl(&env);
-        env.storage()
+        let list_key = DataKey::PositionList(provider);
+        let list: Vec<(i32, i32)> = env
+            .storage()
             .persistent()
-            .get(&DataKey::PositionList(provider))
-            .unwrap_or_else(|| Vec::new(&env))
+            .get(&list_key)
+            .unwrap_or_else(|| Vec::new(&env));
+        let count = list.len() as u64;
+        let limit = limit.min(Self::MAX_PAGE) as u64;
+        let mut out = Vec::new(&env);
+        if limit == 0 || offset >= count {
+            return out;
+        }
+        let end = core::cmp::min(offset.saturating_add(limit), count);
+        let mut i = offset;
+        while i < end {
+            out.push_back(list.get(i as u32).unwrap());
+            i += 1;
+        }
+        out
+    }
+
+    /// Returns up to `MAX_PAGE` open position tick-range pairs for `provider`
+    /// (empty vec if none). Kept on the ABI for compatibility; a provider
+    /// holding more than `MAX_PAGE` positions must use `get_positions_paginated`
+    /// to see the rest — an unbounded `get_positions` would reintroduce the
+    /// view trap DoS on large position sets.
+    pub fn get_positions(env: Env, provider: Address) -> Vec<(i32, i32)> {
+        Self::get_positions_paginated(env, provider, 0, Self::MAX_PAGE)
     }
 
     /// Simulate token amounts required for a given tick range and liquidity.
@@ -6499,6 +6539,121 @@ mod test_new_features {
         let positions_after = client.get_positions(&provider);
         assert_eq!(positions_after.len(), 1);
         assert_eq!(positions_after.get(0).unwrap(), (200_i32, 400_i32));
+    }
+
+    #[test]
+    fn test_get_positions_paginated_and_page_cap() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.budget().reset_unlimited();
+
+        let admin = Address::generate(&env);
+        let token_a = env
+            .register_stellar_asset_contract_v2(admin.clone())
+            .address();
+        let token_b = env
+            .register_stellar_asset_contract_v2(admin.clone())
+            .address();
+        let cl_addr = env.register_contract(None, ConcentratedLiquidity);
+        let client = ConcentratedLiquidityClient::new(&env, &cl_addr);
+        client.initialize(&admin, &token_a, &token_b, &30_i128, &0_i32, &1_i32);
+
+        let provider = Address::generate(&env);
+        let count = (ConcentratedLiquidity::MAX_PAGE + 5) as usize; // 105
+        StellarAssetClient::new(&env, &token_a).mint(&provider, &100_000_000_i128);
+
+        for i in 0..count {
+            let lower = 100_i32 + (i as i32) * 10;
+            let upper = lower + 5;
+            client.mint_position(
+                &provider,
+                &lower,
+                &upper,
+                &100_i128,
+                &0_i128,
+                &0_i128,
+                &0_i128,
+                &u64::MAX,
+            );
+        }
+
+        // get_positions caps at MAX_PAGE (100)
+        let capped = client.get_positions(&provider);
+        assert_eq!(capped.len(), ConcentratedLiquidity::MAX_PAGE);
+
+        // Paginated: page 1 returns MAX_PAGE items
+        let page1 = client.get_positions_paginated(&provider, &0_u64, &ConcentratedLiquidity::MAX_PAGE);
+        assert_eq!(page1.len(), ConcentratedLiquidity::MAX_PAGE);
+        assert_eq!(page1.get(0).unwrap(), (100_i32, 105_i32));
+
+        // Page 2 returns the remaining 5 items
+        let page2 = client.get_positions_paginated(
+            &provider,
+            &(ConcentratedLiquidity::MAX_PAGE as u64),
+            &ConcentratedLiquidity::MAX_PAGE,
+        );
+        assert_eq!(page2.len(), 5);
+
+        // Offset out of bounds returns empty
+        let page_empty = client.get_positions_paginated(
+            &provider,
+            &(count as u64 + 10),
+            &10_u32,
+        );
+        assert_eq!(page_empty.len(), 0);
+
+        // Limit 0 returns empty
+        let page_zero = client.get_positions_paginated(&provider, &0_u64, &0_u32);
+        assert_eq!(page_zero.len(), 0);
+    }
+
+    #[test]
+    fn test_get_positions_paginated_boundaries() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.budget().reset_unlimited();
+
+        let admin = Address::generate(&env);
+        let token_a = env
+            .register_stellar_asset_contract_v2(admin.clone())
+            .address();
+        let token_b = env
+            .register_stellar_asset_contract_v2(admin.clone())
+            .address();
+        let cl_addr = env.register_contract(None, ConcentratedLiquidity);
+        let client = ConcentratedLiquidityClient::new(&env, &cl_addr);
+        client.initialize(&admin, &token_a, &token_b, &30_i128, &0_i32, &1_i32);
+
+        let provider = Address::generate(&env);
+        StellarAssetClient::new(&env, &token_a).mint(&provider, &100_000_i128);
+
+        // Empty returns empty vec
+        assert_eq!(client.get_positions(&provider).len(), 0);
+        assert_eq!(client.get_positions_paginated(&provider, &0_u64, &10_u32).len(), 0);
+
+        // Mint 3 positions
+        for i in 0..3 {
+            let lower = 100_i32 + (i as i32) * 10;
+            let upper = lower + 5;
+            client.mint_position(
+                &provider,
+                &lower,
+                &upper,
+                &100_i128,
+                &0_i128,
+                &0_i128,
+                &0_i128,
+                &u64::MAX,
+            );
+        }
+
+        assert_eq!(client.get_positions(&provider).len(), 3);
+        let page = client.get_positions_paginated(&provider, &1_u64, &1_u32);
+        assert_eq!(page.len(), 1);
+        assert_eq!(page.get(0).unwrap(), (110_i32, 115_i32));
+
+        let page_past = client.get_positions_paginated(&provider, &3_u64, &10_u32);
+        assert_eq!(page_past.len(), 0);
     }
 
     // ── Issue #185: quote_position ────────────────────────────────────────────

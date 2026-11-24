@@ -10920,7 +10920,7 @@
       },
       {
         "function_v0": {
-          "doc": "Returns all open position tick-range pairs for `provider`.",
+          "doc": "Returns up to `MAX_PAGE` open position tick-range pairs for `provider`\n(empty vec if none). Kept on the ABI for compatibility; a provider\nholding more than `MAX_PAGE` positions must use `get_positions_paginated`\nto see the rest — an unbounded `get_positions` would reintroduce the\nview trap DoS on large position sets.",
           "inputs": [
             {
               "doc": "",
@@ -10929,6 +10929,43 @@
             }
           ],
           "name": "get_positions",
+          "outputs": [
+            {
+              "vec": {
+                "element_type": {
+                  "tuple": {
+                    "value_types": [
+                      "i32",
+                      "i32"
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      {
+        "function_v0": {
+          "doc": "Returns up to `MAX_PAGE` open position tick-range pairs for `provider`,\nstarting at `offset`. Callers holding more than `MAX_PAGE` positions must page\nthrough all of them with repeated calls (`offset += MAX_PAGE` each time).\n\nThe underlying `PositionList` stores all distinct open tick ranges for a provider.\nBecause `PositionList` is unbounded in storage size if a provider opens very many\nranges, `get_positions` and this function enforce page bounds of `MAX_PAGE` to prevent\ntrapping the view on oversized reads. Callers must page through all ranges using `offset`.",
+          "inputs": [
+            {
+              "doc": "",
+              "name": "provider",
+              "type_": "address"
+            },
+            {
+              "doc": "",
+              "name": "offset",
+              "type_": "u64"
+            },
+            {
+              "doc": "",
+              "name": "limit",
+              "type_": "u32"
+            }
+          ],
+          "name": "get_positions_paginated",
           "outputs": [
             {
               "vec": {

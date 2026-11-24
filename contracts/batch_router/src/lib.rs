@@ -342,7 +342,8 @@ impl BatchRouter {
         Self::extend_ttl(&env);
         caller.require_auth();
         Self::require_not_paused(&env)?;
-        Self::check_preconditions(&env, &ops, deadline)?;
+        Self::check_batch_size(&ops)?;
+        Self::check_preconditions(&env, deadline)?;
 
         let factory: Address = Self::factory(&env)?;
         let factory_client = FactoryClient::new(&env, &factory);
@@ -389,6 +390,7 @@ impl BatchRouter {
     ) -> Result<Vec<BatchOpResult>, BatchRouterError> {
         Self::extend_ttl(&env);
         Self::require_not_paused(&env)?;
+        Self::check_batch_size(&ops)?;
         let factory: Address = Self::factory(&env)?;
         let factory_client = FactoryClient::new(&env, &factory);
 
@@ -416,7 +418,8 @@ impl BatchRouter {
     ) -> Result<(), BatchRouterError> {
         Self::extend_ttl(&env);
         Self::require_not_paused(&env)?;
-        Self::check_preconditions(&env, &ops, deadline)?;
+        Self::check_batch_size(&ops)?;
+        Self::check_preconditions(&env, deadline)?;
         Self::simulate_batch(env, ops)?;
         Ok(())
     }
@@ -482,17 +485,20 @@ impl BatchRouter {
         Ok(())
     }
 
-    fn check_preconditions(
-        env: &Env,
-        ops: &Vec<BatchOp>,
-        deadline: u64,
-    ) -> Result<(), BatchRouterError> {
+    fn check_batch_size(ops: &Vec<BatchOp>) -> Result<(), BatchRouterError> {
         if ops.is_empty() {
             return Err(BatchRouterError::EmptyBatch);
         }
         if ops.len() > MAX_BATCH_OPS {
             return Err(BatchRouterError::BatchTooLarge);
         }
+        Ok(())
+    }
+
+    fn check_preconditions(
+        env: &Env,
+        deadline: u64,
+    ) -> Result<(), BatchRouterError> {
         if env.ledger().timestamp() > deadline {
             return Err(BatchRouterError::DeadlineExpired);
         }
@@ -1961,6 +1967,51 @@ mod tests {
         assert_eq!(
             client.try_validate_batch(&ops, &deadline),
             Err(Ok(BatchRouterError::BatchTooLarge))
+        );
+    }
+
+    #[test]
+    fn test_simulate_batch_rejects_empty_batch() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let factory_addr = setup_env_and_factory(&env);
+        let client = deploy_router(&env, &factory_addr);
+        let ops: Vec<BatchOp> = Vec::new(&env);
+        assert_eq!(
+            client.try_simulate_batch(&ops),
+            Err(Ok(BatchRouterError::EmptyBatch))
+        );
+    }
+
+    #[test]
+    fn test_simulate_batch_rejects_oversized_batch() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let factory_addr = setup_env_and_factory(&env);
+        let (ta, _, pool, _) = setup_pool(&env, &factory_addr);
+        let client = deploy_router(&env, &factory_addr);
+        let mut ops: Vec<BatchOp> = Vec::new(&env);
+        for _ in 0..(MAX_BATCH_OPS + 1) {
+            ops.push_back(swap_op(&pool, &ta, 1_000, PoolType::Amm, false));
+        }
+        assert_eq!(
+            client.try_simulate_batch(&ops),
+            Err(Ok(BatchRouterError::BatchTooLarge))
+        );
+    }
+
+    #[test]
+    fn test_execute_batch_rejects_empty_batch() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let factory_addr = setup_env_and_factory(&env);
+        let (_, _, _, caller) = setup_pool(&env, &factory_addr);
+        let client = deploy_router(&env, &factory_addr);
+        let ops: Vec<BatchOp> = Vec::new(&env);
+        let deadline = env.ledger().timestamp() + 1_000;
+        assert_eq!(
+            client.try_execute_batch(&caller, &ops, &deadline),
+            Err(Ok(BatchRouterError::EmptyBatch))
         );
     }
 
